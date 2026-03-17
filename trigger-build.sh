@@ -1,21 +1,48 @@
 #!/bin/bash
-# Triggers a Choreo build by making a random commit to the buildTest repo.
-# Usage: ./trigger-build.sh [path-to-buildTest-repo]
+# Triggers a Choreo build by committing to the buildTest repo via GitHub API.
+# Requires GITHUB_TOKEN and optionally GITHUB_REPO env vars.
 
-REPO_PATH="${1:-$HOME/Developer/buildTest}"
+REPO="${GITHUB_REPO:-JDPrabasha/buildTest}"
+BRANCH="main"
+FILE_PATH=".build-trigger"
+TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-if [ ! -d "$REPO_PATH/.git" ]; then
-  echo "Error: $REPO_PATH is not a git repo"
+if [ -z "$GITHUB_TOKEN" ]; then
+  echo "Error: GITHUB_TOKEN is not set"
   exit 1
 fi
 
-cd "$REPO_PATH"
+API="https://api.github.com/repos/${REPO}/contents/${FILE_PATH}"
 
-# Update a build trigger file with a timestamp
-echo "Build trigger: $(date -u +%Y-%m-%dT%H:%M:%SZ)" > .build-trigger
+# Get current file SHA (if it exists)
+RESPONSE=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" \
+  -H "Accept: application/vnd.github.v3+json" \
+  "${API}?ref=${BRANCH}")
 
-git add .build-trigger
-git commit -m "trigger build $(date -u +%Y%m%d%H%M%S)"
-git push origin main
+SHA=$(echo "$RESPONSE" | grep '"sha"' | head -1 | sed 's/.*"sha": *"\([^"]*\)".*/\1/')
 
-echo "Done. Commit pushed to trigger Choreo build."
+CONTENT=$(echo -n "Build trigger: ${TIMESTAMP}" | base64)
+
+if [ -n "$SHA" ]; then
+  # Update existing file
+  PAYLOAD=$(printf '{"message":"trigger build %s","content":"%s","sha":"%s","branch":"%s"}' \
+    "$(date -u +%Y%m%d%H%M%S)" "$CONTENT" "$SHA" "$BRANCH")
+else
+  # Create new file
+  PAYLOAD=$(printf '{"message":"trigger build %s","content":"%s","branch":"%s"}' \
+    "$(date -u +%Y%m%d%H%M%S)" "$CONTENT" "$BRANCH")
+fi
+
+RESULT=$(curl -s -X PUT \
+  -H "Authorization: token ${GITHUB_TOKEN}" \
+  -H "Accept: application/vnd.github.v3+json" \
+  "${API}" \
+  -d "${PAYLOAD}")
+
+if echo "$RESULT" | grep -q '"commit"'; then
+  echo "Done. Commit pushed to ${REPO} to trigger Choreo build."
+else
+  echo "Error: Failed to create commit"
+  echo "$RESULT"
+  exit 1
+fi
